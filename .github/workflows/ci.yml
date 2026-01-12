@@ -36,7 +36,7 @@ jobs:
     
     strategy:
       matrix:
-        goos: [linux, darwin, windows]
+        goos: [linux, darwin] # windows is not supported yet
         goarch: [amd64, arm64]
     
     steps:
