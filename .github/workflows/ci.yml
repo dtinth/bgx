@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+    
+    - name: Build
+      run: go build -v -o bgx
+    
+    - name: Run tests
+      run: go test -v -timeout 30m ./...
+    
+    - name: Run short tests only (fast CI)
+      run: go test -v -short -timeout 5m ./...
+  
+  build:
+    name: Build Binaries
+    runs-on: ubuntu-latest
+    needs: test
+    
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+    
+    - name: Build binary
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+      run: |
+        OUTPUT_NAME="bgx-${{ matrix.goos }}-${{ matrix.goarch }}"
+        if [ "${{ matrix.goos }}" = "windows" ]; then
+          OUTPUT_NAME="${OUTPUT_NAME}.exe"
+        fi
+        go build -v -o "${OUTPUT_NAME}"
+        ls -lh "${OUTPUT_NAME}"
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: bgx-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: bgx-*
+  
+  integration-test:
+    name: Integration Test (Parallel Tasks)
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+    
+    - name: Build
+      run: go build -v -o bgx
+    
+    - name: Test parallel execution
+      run: |
+        # This demonstrates BGX's actual use case!
+        export BGX_HOME="/tmp/bgx_integration"
+        mkdir -p "$BGX_HOME"
+        
+        echo "Starting 3 parallel tasks..."
+        ./bgx fork --task-name task1 -- sh -c 'echo "Task 1 running"; sleep 2; echo "Task 1 done"; exit 1'
+        ./bgx fork --task-name task2 -- sh -c 'echo "Task 2 running"; sleep 2; echo "Task 2 done"; exit 0'
+        ./bgx fork --task-name task3 -- sh -c 'echo "Task 3 running"; sleep 2; echo "Task 3 done"; exit 0'
+        
+        echo "Waiting for all tasks to complete..."
+        set +e  # Don't fail on non-zero exit
+        
+        echo "=== Task 1 Output ==="
+        ./bgx join --task-name task1
+        TASK1_EXIT=$?
+        
+        echo "=== Task 2 Output ==="
+        ./bgx join --task-name task2
+        TASK2_EXIT=$?
+        
+        echo "=== Task 3 Output ==="
+        ./bgx join --task-name task3
+        TASK3_EXIT=$?
+        
+        echo "Exit codes: task1=$TASK1_EXIT, task2=$TASK2_EXIT, task3=$TASK3_EXIT"
+        
+        # Verify exit codes
+        if [ "$TASK1_EXIT" -ne 1 ]; then
+          echo "ERROR: Task 1 should exit with code 1"
+          exit 1
+        fi
+        
+        if [ "$TASK2_EXIT" -ne 0 ]; then
+          echo "ERROR: Task 2 should exit with code 0"
+          exit 1
+        fi
+        
+        if [ "$TASK3_EXIT" -ne 0 ]; then
+          echo "ERROR: Task 3 should exit with code 0"
+          exit 1
+        fi
+        
+        echo "All exit codes correct!"
+        
+        # Show log files
+        echo "=== Log files ==="
+        ls -lh "$BGX_HOME"
+        
+        echo "=== Sample log content (task1) ==="
+        cat "$BGX_HOME/task1.ndjson"

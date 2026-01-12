@@ -1,0 +1,26 @@
+# Binaries
+bgx
+bgx-*
+*.exe
+
+# Test artifacts
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test directories
+/tmp/
