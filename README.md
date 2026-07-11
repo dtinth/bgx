@@ -136,23 +136,34 @@ step doesn't, keep doing that independent work meanwhile, then `join` right
 before you consume the result. The join both surfaces the output and gates on
 success, so a failed background task fails the step.
 
-In the example below, pulling the database image and downloading test fixtures
-are slow and independent of building the app — so they run in the background
-while the build proceeds, and the integration tests (which need all three) wait
-on them at the end:
+Good things to fork are slow and independent — their result isn't needed by the
+step that runs next:
+
+- `docker pull` / `docker compose pull` — prefetch container images
+- `sudo apt-get install -y …` — install system packages
+- `npm ci` (or `pip install`, `bundle install`, …) — install dependencies.
+  These can be forked too, but **`join` them before any step that uses a
+  dependency** (build, test, lint) — otherwise that step may run before the
+  install finishes.
+
+For example, pulling container images and installing a system tool are
+independent of installing JS deps and building the app, so they overlap; the
+integration tests join them at the end, right before they're needed:
 
 ```yaml
-- name: Prefetch slow dependencies in the background
+- name: Prefetch slow, independent work in the background
   run: |
-    bgx fork --task-name image    -- docker pull ghcr.io/example/db:16
-    bgx fork --task-name fixtures -- ./scripts/download-fixtures.sh
+    bgx fork --task-name images -- docker compose pull
+    bgx fork --task-name ffmpeg -- sudo apt-get install -y ffmpeg
 
-- name: Build the app (doesn't need the image or fixtures)
-  run: npm run build
+- name: Install deps and build (needs neither the images nor ffmpeg)
+  run: |
+    npm ci
+    npm run build
 
 - name: Integration tests — wait for the prefetch, fail if any failed
   run: |
-    bgx join --task-name image --task-name fixtures
+    bgx join --task-name images --task-name ffmpeg
     npm run test:integration
 ```
 
