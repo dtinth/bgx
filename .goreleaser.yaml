@@ -66,3 +66,6 @@ changelog:
 release:
   draft: false
   prerelease: auto
+  # release-please creates the GitHub Release (with the changelog) before this
+  # runs; keep it and just upload the built archives + checksums to it.
+  mode: keep-existing
