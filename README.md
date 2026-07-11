@@ -28,7 +28,7 @@ mise use -g github:dtinth/bgx
 Pin a specific version:
 
 ```bash
-mise use -g github:dtinth/bgx@1.0.0
+mise use -g github:dtinth/bgx@0.2.0
 ```
 
 ### With go install
@@ -63,6 +63,54 @@ This will:
 - Stream stdout and stderr in real-time
 - Wait for the process to complete
 - Exit with the same exit code as the original command
+
+Because output and exit code are persisted, you can `fork` a task, do other
+work while it runs, and `join` it much later — even after it has finished. The
+join replays the task's full output and exits with its recorded exit code; it
+does not depend on the background process still being alive.
+
+### Joining several tasks
+
+Repeat `--task-name` to join multiple tasks in one call. `join` waits for all
+of them, tags each output line with its task name, and exits non-zero if any
+task failed (with the first failing task's exit code):
+
+```bash
+bgx join --task-name build --task-name test
+```
+
+```
+[build] Compiling...
+[test]  ok  	./...	0.42s
+```
+
+## CI parallelization
+
+The intended pattern: `fork` slow, independent setup work up front, keep doing
+other work, then `join` each task right before you need its result. The join
+both surfaces the output and gates on success, so a failed background task
+fails the step.
+
+```yaml
+- name: Start background setup
+  run: |
+    export BGX_DB="$RUNNER_TEMP/bgx.db"
+    bgx fork --task-name deps  -- npm ci
+    bgx fork --task-name image -- docker pull ghcr.io/example/base:latest
+
+- name: Build (runs concurrently with the setup above)
+  run: |
+    export BGX_DB="$RUNNER_TEMP/bgx.db"
+    ./build.sh
+
+- name: Wait for setup, fail if any failed
+  run: |
+    export BGX_DB="$RUNNER_TEMP/bgx.db"
+    bgx join --task-name deps --task-name image
+```
+
+Set `BGX_DB` to a stable path shared by every step (as above) so `fork` and
+`join` in different steps talk to the same database.
 
 ## Configuration
 

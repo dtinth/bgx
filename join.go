@@ -4,31 +4,37 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 )
 
-// parseJoinArgs parses `join` arguments of the form: --task-name NAME
-func parseJoinArgs(args []string) (taskName string, err error) {
+// parseJoinArgs parses `join` arguments of the form:
+//
+//	--task-name NAME [--task-name NAME ...]
+//
+// Repeating --task-name joins several tasks at once.
+func parseJoinArgs(args []string) ([]string, error) {
+	var taskNames []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--task-name":
 			if i+1 >= len(args) {
-				return "", fmt.Errorf("--task-name requires an argument")
+				return nil, fmt.Errorf("--task-name requires an argument")
 			}
-			taskName = args[i+1]
+			taskNames = append(taskNames, args[i+1])
 			i++
 		default:
-			return "", fmt.Errorf("unexpected argument %q\nUsage: bgx join --task-name NAME", args[i])
+			return nil, fmt.Errorf("unexpected argument %q\nUsage: bgx join --task-name NAME [--task-name NAME ...]", args[i])
 		}
 	}
-	if taskName == "" {
-		return "", fmt.Errorf("--task-name is required")
+	if len(taskNames) == 0 {
+		return nil, fmt.Errorf("--task-name is required")
 	}
-	return taskName, nil
+	return taskNames, nil
 }
 
 func runJoin(args []string) (int, error) {
-	taskName, err := parseJoinArgs(args)
+	taskNames, err := parseJoinArgs(args)
 	if err != nil {
 		return 1, err
 	}
@@ -39,52 +45,93 @@ func runJoin(args []string) (int, error) {
 	}
 	defer db.Close()
 
-	exists, err := taskExists(db, taskName)
-	if err != nil {
-		return 1, fmt.Errorf("failed to look up task: %w", err)
-	}
-	if !exists {
-		return 1, fmt.Errorf("task %q not found (BGX_DB=%s)", taskName, getDBPath())
+	for _, name := range taskNames {
+		exists, err := taskExists(db, name)
+		if err != nil {
+			return 1, fmt.Errorf("failed to look up task: %w", err)
+		}
+		if !exists {
+			return 1, fmt.Errorf("task %q not found (BGX_DB=%s)", name, getDBPath())
+		}
 	}
 
-	return processEvents(db, taskName)
+	// A single task streams unprefixed, byte-for-byte. Multiple tasks stream
+	// concurrently, each line tagged with its task name.
+	var printMu sync.Mutex
+	if len(taskNames) == 1 {
+		return streamTask(db, taskNames[0], "", &printMu)
+	}
+	return joinAll(db, taskNames, &printMu)
 }
 
-// processEvents streams a task's output to stdout/stderr and returns its exit
-// code. It polls the database, advancing a monotonic id cursor, until it sees
-// the exit event or the task stops emitting events for HeartbeatTimeout.
-func processEvents(db *sql.DB, taskName string) (int, error) {
+// joinAll waits for every task, streaming each concurrently with a [task]
+// prefix. It returns after all tasks finish, with a non-zero exit code if any
+// task failed (the first failing task's code, in argument order).
+func joinAll(db *sql.DB, taskNames []string, printMu *sync.Mutex) (int, error) {
+	codes := make([]int, len(taskNames))
+	errs := make([]error, len(taskNames))
+
+	var wg sync.WaitGroup
+	for i, name := range taskNames {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			codes[i], errs[i] = streamTask(db, name, fmt.Sprintf("[%s] ", name), printMu)
+		}(i, name)
+	}
+	wg.Wait()
+
+	for i := range taskNames {
+		if errs[i] != nil {
+			return 1, errs[i]
+		}
+	}
+	for i := range taskNames {
+		if codes[i] != 0 {
+			return codes[i], nil
+		}
+	}
+	return 0, nil
+}
+
+// streamTask replays and tails one task's output to stdout/stderr and returns
+// its exit code. Each line is written under printMu (so concurrently-joined
+// tasks never interleave mid-line) and prefixed with prefix when non-empty. It
+// polls the database, advancing a monotonic id cursor, until it sees the exit
+// event or the task stops emitting events for HeartbeatTimeout.
+//
+// Because it reads persisted events rather than a live process, joining a task
+// that finished long ago replays its full history and exit code.
+func streamTask(db *sql.DB, taskName, prefix string, printMu *sync.Mutex) (int, error) {
 	var lastID int64
 	lastEventTime := time.Now()
-	exitCode := 0
-	hasExited := false
 
 	for {
 		events, err := readEventsAfter(db, taskName, lastID)
 		if err != nil {
-			return 1, fmt.Errorf("failed to read events: %w", err)
+			return 1, fmt.Errorf("failed to read events for %q: %w", taskName, err)
 		}
 
 		for _, e := range events {
 			lastID = e.ID
 			switch e.Type {
 			case EventTypeStdout:
-				fmt.Print(e.Data)
+				printMu.Lock()
+				fmt.Print(prefix + e.Data)
+				printMu.Unlock()
 			case EventTypeStderr:
-				fmt.Fprint(os.Stderr, e.Data)
+				printMu.Lock()
+				fmt.Fprint(os.Stderr, prefix+e.Data)
+				printMu.Unlock()
 			case EventTypeExit:
-				exitCode = e.Code
-				hasExited = true
+				return e.Code, nil
 			}
 		}
 
-		if hasExited {
-			return exitCode, nil
-		}
 		if len(events) > 0 {
 			lastEventTime = time.Now()
 		} else if time.Since(lastEventTime) > HeartbeatTimeout {
-			return 1, fmt.Errorf("heartbeat timeout: no events received for %v", HeartbeatTimeout)
+			return 1, fmt.Errorf("heartbeat timeout: no events from task %q for %v", taskName, HeartbeatTimeout)
 		}
 
 		time.Sleep(JoinPollInterval)
