@@ -15,9 +15,29 @@ bgx join --task-name build1
 
 ## Installation
 
+### With mise (recommended)
+
+Install directly from GitHub releases — mise auto-detects your OS/arch:
+
+```bash
+mise use -g github:dtinth/bgx
+```
+
+Pin a specific version:
+
+```bash
+mise use -g github:dtinth/bgx@1.0.0
+```
+
+### With go install
+
 ```bash
 go install github.com/dtinth/bgx@latest
 ```
+
+### Manual download
+
+Grab a prebuilt archive from the [releases page](https://github.com/dtinth/bgx/releases), extract it, and put the `bgx` binary on your `PATH`.
 
 ## Usage
 
@@ -73,6 +93,21 @@ BGX uses NDJSON (newline-delimited JSON) for structured logging:
 {"type":"heartbeat","time":"2026-01-12T10:30:05Z","cpu_seconds":1.2,"mem_bytes":4096}
 {"type":"exit","time":"2026-01-12T10:30:10Z","code":0}
 ```
+
+## Releasing
+
+Releases are automated with [GoReleaser](https://goreleaser.com) via
+`.github/workflows/release.yml`. To cut a release, push a semver tag:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The workflow cross-compiles binaries (linux/darwin × amd64/arm64), packages
+them as `bgx_<Os>_<Arch>.tar.gz` archives with a `checksums.txt`, and publishes
+a GitHub Release. The archive names are chosen so mise's `github:` backend can
+resolve the right asset automatically.
 
 ## Limitations
 
