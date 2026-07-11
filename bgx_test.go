@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -453,6 +454,65 @@ func TestMultiJoinFailurePropagates(t *testing.T) {
 	// Both tasks' output should still be surfaced (wait-all, not fail-fast).
 	if !strings.Contains(string(output), "good") || !strings.Contains(string(output), "oops") {
 		t.Errorf("Expected output from both tasks, got: %s", output)
+	}
+}
+
+func TestJoinGroup(t *testing.T) {
+	setupDB(t)
+
+	for _, tn := range []string{"g1", "g2"} {
+		forkCmd := exec.Command(bgxPath, "fork", "--task-name", tn, "--", "echo", "in-"+tn)
+		if err := forkCmd.Run(); err != nil {
+			t.Fatalf("Fork %s failed: %v", tn, err)
+		}
+	}
+
+	joinCmd := exec.Command(bgxPath, "join", "--group", "--task-name", "g1", "--task-name", "g2")
+	output, err := joinCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Join failed: %v, output: %s", err, output)
+	}
+	out := string(output)
+
+	// Each task's output should be wrapped in its own contiguous group block.
+	for _, want := range []string{"::group::g1", "::group::g2", "::endgroup::"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Expected %q in grouped output, got: %s", want, out)
+		}
+	}
+	// g1's group header must come before g1's content, before g2's header.
+	iG1 := strings.Index(out, "::group::g1")
+	iContent := strings.Index(out, "in-g1")
+	iG2 := strings.Index(out, "::group::g2")
+	if !(iG1 < iContent && iContent < iG2) {
+		t.Errorf("Group ordering wrong (g1=%d content=%d g2=%d): %s", iG1, iContent, iG2, out)
+	}
+	// Group mode does not add the [task] line prefix (the group names it).
+	if strings.Contains(out, "[g1]") {
+		t.Errorf("Group mode should not add [task] prefixes, got: %s", out)
+	}
+}
+
+func TestJoinTimestamps(t *testing.T) {
+	setupDB(t)
+	taskName := "ts"
+
+	forkCmd := exec.Command(bgxPath, "fork", "--task-name", taskName, "--", "echo", "hello")
+	if err := forkCmd.Run(); err != nil {
+		t.Fatalf("Fork failed: %v", err)
+	}
+
+	joinCmd := exec.Command(bgxPath, "join", "--timestamps", "--task-name", taskName)
+	var stdout strings.Builder
+	joinCmd.Stdout = &stdout
+	if err := joinCmd.Run(); err != nil {
+		t.Fatalf("Join failed: %v", err)
+	}
+
+	// Expect a leading HH:MM:SS.mmm timestamp before the output line.
+	tsLine := regexp.MustCompile(`^\d{2}:\d{2}:\d{2}\.\d{3} hello`)
+	if !tsLine.MatchString(strings.TrimSpace(stdout.String())) {
+		t.Errorf("Expected a timestamp-prefixed line, got: %q", stdout.String())
 	}
 }
 

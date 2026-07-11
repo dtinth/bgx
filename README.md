@@ -84,6 +84,29 @@ bgx join --task-name build --task-name test
 [test]  ok  	./...	0.42s
 ```
 
+Two options control formatting:
+
+- `--group` wraps each task's output in a [GitHub Actions collapsible
+  group](https://docs.github.com/actions/reference/workflow-commands-for-github-actions#grouping-log-lines)
+  (`::group::` / `::endgroup::`). Tasks are drained one at a time so each
+  group stays contiguous, and the `[task]` line prefix is dropped since the
+  group header already names the task.
+- `--timestamps` prefixes each line with the event's recorded time
+  (`HH:MM:SS.mmm`).
+
+```bash
+bgx join --group --task-name build --task-name test
+```
+
+```
+::group::build
+Compiling...
+::endgroup::
+::group::test
+ok  	./...	0.42s
+::endgroup::
+```
+
 ## CI parallelization
 
 The intended pattern: `fork` slow, independent setup work up front, keep doing
