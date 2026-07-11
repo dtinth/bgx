@@ -146,9 +146,9 @@ jobs:
       with:
         go-version-file: 'go.mod'
 
-    # No BGX_DB is set: this exercises the zero-config default (<tmpdir>/bgx.db,
-    # i.e. /tmp/bgx.db), which is the same directory for every step in a job, so
-    # a task forked in one step is found by a join in a later one.
+    # No BGX_DB is set: this exercises the zero-config default. On CI, bgx uses
+    # $RUNNER_TEMP/bgx.db, the same per-job directory for every step, so a task
+    # forked in one step is found by a join in a later one.
     - name: Build and install on PATH
       run: |
         go build -v -o bgx
@@ -202,7 +202,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: bgx-smoke-db
-        path: /tmp/bgx.db # bgx's default database location
+        path: ${{ runner.temp }}/bgx.db # bgx's default database location on CI
         if-no-files-found: warn
 
   smoke-test-windows:
@@ -219,9 +219,9 @@ jobs:
       with:
         go-version-file: 'go.mod'
 
-    # No BGX_DB is set: this exercises the zero-config default (the same temp
-    # directory for every step in a job), so a task forked in one step is found
-    # by a join in a later one.
+    # No BGX_DB is set: this exercises the zero-config default. On CI, bgx uses
+    # $RUNNER_TEMP/bgx.db, the same per-job directory for every step, so a task
+    # forked in one step is found by a join in a later one.
     - name: Build
       run: go build -v -o bgx.exe
 

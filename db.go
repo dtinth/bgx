@@ -33,11 +33,21 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_task_id ON events(task, id);
 `
 
-// getDBPath returns the path to the shared BGX database, honoring the BGX_DB
-// environment variable and defaulting to <tmpdir>/bgx.db.
+// getDBPath returns the path to the shared BGX database.
+//
+// Precedence:
+//  1. BGX_DB, if set, is used verbatim.
+//  2. Otherwise, on CI runners that set RUNNER_TEMP (GitHub Actions), the
+//     database lives in that per-job temp directory. RUNNER_TEMP is unique per
+//     job and cleaned up when the job ends, so concurrent jobs sharing a
+//     machine (self-hosted runners) get automatic isolation with no config.
+//  3. Otherwise it falls back to <tmpdir>/bgx.db.
 func getDBPath() string {
 	if p := os.Getenv("BGX_DB"); p != "" {
 		return p
+	}
+	if dir := os.Getenv("RUNNER_TEMP"); dir != "" {
+		return filepath.Join(dir, "bgx.db")
 	}
 	return filepath.Join(os.TempDir(), "bgx.db")
 }
