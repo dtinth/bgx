@@ -135,6 +135,7 @@ func insertEvent(db *sql.DB, task string, e Event) error {
 type eventRow struct {
 	ID   int64
 	Type string
+	Time string
 	Data string
 	Code int
 }
@@ -143,7 +144,7 @@ type eventRow struct {
 // in insertion order. The monotonic id column acts as the read cursor.
 func readEventsAfter(db *sql.DB, task string, afterID int64) ([]eventRow, error) {
 	rows, err := db.Query(
-		"SELECT id, type, data, code FROM events WHERE task = ? AND id > ? ORDER BY id",
+		"SELECT id, type, time, data, code FROM events WHERE task = ? AND id > ? ORDER BY id",
 		task, afterID,
 	)
 	if err != nil {
@@ -154,7 +155,7 @@ func readEventsAfter(db *sql.DB, task string, afterID int64) ([]eventRow, error)
 	var events []eventRow
 	for rows.Next() {
 		var e eventRow
-		if err := rows.Scan(&e.ID, &e.Type, &e.Data, &e.Code); err != nil {
+		if err := rows.Scan(&e.ID, &e.Type, &e.Time, &e.Data, &e.Code); err != nil {
 			return nil, err
 		}
 		events = append(events, e)

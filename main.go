@@ -47,8 +47,13 @@ func printUsage() {
 
 Usage:
   bgx fork --task-name NAME -- COMMAND [ARGS...]
-  bgx join --task-name NAME [--task-name NAME ...]
+  bgx join --task-name NAME [--task-name NAME ...] [--group] [--timestamps]
   bgx version
+
+Join options:
+  --group        Wrap each task's output in a GitHub Actions ::group:: block
+                 (drains tasks sequentially so each group stays contiguous).
+  --timestamps   Prefix each output line with the event's recorded time.
 
 Example:
   bgx fork --task-name build -- make build
