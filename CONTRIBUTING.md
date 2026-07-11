@@ -4,7 +4,7 @@ Thanks for your interest in contributing to BGX!
 
 ## Development Setup
 
-1. Install Go 1.22 or later
+1. Install Go 1.25 or later
 2. Clone the repository
 3. Build: `go build -o bgx`
 4. Run tests: `go test -v ./...`
@@ -29,8 +29,9 @@ go test -v -cover ./...
 
 - `main.go` - CLI entry point and command routing
 - `types.go` - Event types and constants
+- `db.go` - Shared SQLite database (schema, task registration, event I/O)
 - `fork.go` - Process forking and monitoring
-- `join.go` - Log tailing and output replication
+- `join.go` - Event polling and output replication
 - `bgx_test.go` - Acceptance tests
 
 ## Adding New Features
@@ -44,7 +45,6 @@ go test -v -cover ./...
 ## Testing Guidelines
 
 - Write acceptance tests for user-facing behavior
-- Test both named task and stdio modes
 - Include error cases
 - Use `t.TempDir()` for test isolation
 - Clean up resources with `defer`

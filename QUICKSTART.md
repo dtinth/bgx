@@ -4,8 +4,6 @@
 
 ### From Source
 ```bash
-# Unzip the archive
-unzip bgx.zip
 cd bgx
 
 # Build
@@ -19,7 +17,6 @@ sudo mv bgx /usr/local/bin/
 Download from GitHub releases for your platform:
 - Linux: `bgx-linux-amd64` or `bgx-linux-arm64`
 - macOS: `bgx-darwin-amd64` or `bgx-darwin-arm64`
-- Windows: `bgx-windows-amd64.exe`
 
 ## Quick Examples
 
@@ -45,32 +42,23 @@ bgx join --task-name backend
 bgx join --task-name tests
 ```
 
-### Example 3: Stdio Mode
+### Example 3: Custom Database Location
 ```bash
-# Pipe output to file
-bgx fork echo "Hello World" > output.log
-
-# Process later
-cat output.log | bgx join
-```
-
-### Example 4: Custom Log Location
-```bash
-export BGX_HOME=/var/log/my-app
+export BGX_DB=/var/tmp/my-app.db
 bgx fork --task-name deploy -- ./deploy.sh
 bgx join --task-name deploy
 ```
 
 ## Common Patterns
 
-### GitHub Actions Parallel Jobs
+### GitHub Actions Parallel Steps
 ```yaml
-- name: Run tests in parallel
+- name: Run tasks in parallel
   run: |
     bgx fork --task-name unit-tests -- npm test
     bgx fork --task-name e2e-tests -- npm run e2e
     bgx fork --task-name lint -- npm run lint
-    
+
     # Wait for all and check exit codes
     bgx join --task-name unit-tests
     bgx join --task-name e2e-tests
@@ -90,56 +78,35 @@ bgx join --task-name prod-deploy
 echo "Deployment exit code: $?"
 ```
 
-### Monitoring Output
-```bash
-# Start task
-bgx fork --task-name watch-task -- ./long-script.sh
-
-# Monitor in real-time from another terminal
-tail -f /tmp/bgx/watch-task.ndjson | jq .
-
-# Or join to see full output
-bgx join --task-name watch-task
-```
-
 ## Debugging
 
-### View Log File
+### Inspect the Database
 ```bash
-# Pretty print with jq
-cat /tmp/bgx/mytask.ndjson | jq .
+# All events for a task
+sqlite3 "$BGX_DB" "SELECT type, data FROM events WHERE task='mytask' ORDER BY id"
 
-# Filter stdout only
-cat /tmp/bgx/mytask.ndjson | jq 'select(.type=="stdout") | .data'
+# Stdout only
+sqlite3 "$BGX_DB" "SELECT data FROM events WHERE task='mytask' AND type='stdout'"
 
-# View heartbeats
-cat /tmp/bgx/mytask.ndjson | jq 'select(.type=="heartbeat")'
+# Heartbeats (CPU/memory)
+sqlite3 "$BGX_DB" "SELECT time, cpu_seconds, mem_bytes FROM events WHERE task='mytask' AND type='heartbeat'"
 ```
 
 ### Common Issues
 
-**"log file already exists"**
-- Another task with same name exists
-- Remove old log: `rm /tmp/bgx/taskname.ndjson`
+**"task already exists"**
+- Another task with the same name is already registered in the database.
+- Use a different `--task-name`, or reset with `rm "$BGX_DB"`.
 
 **"heartbeat timeout"**
-- Process died without writing exit event
-- Check system logs for crashes
-- Verify process isn't hanging
+- Process died without writing an exit event.
+- Check system logs for crashes or verify the process isn't hanging.
 
-**Join returns wrong exit code**
-- Check log file for exit event
-- Verify process completed
-- Look for truncated log files
+**"task not found"**
+- The task was never forked, or `BGX_DB` points at a different database than the one used by `bgx fork`.
 
 ## Next Steps
 
 - Read [README.md](README.md) for full documentation
 - See [CONTRIBUTING.md](CONTRIBUTING.md) for development guide
 - Check examples in the test suite (bgx_test.go)
-
-## Getting Help
-
-- GitHub Issues: Report bugs or request features
-- Log Files: Always include log file contents when reporting issues
-- Version: Run `bgx --version` (if implemented) or `go version` on build

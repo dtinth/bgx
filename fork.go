@@ -2,197 +2,179 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
+	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
-func runFork(args []string) error {
-	// Parse arguments
-	var taskName string
-	var command []string
-
-	i := 0
-	for i < len(args) {
-		if args[i] == "--task-name" {
+// parseForkArgs parses `fork` arguments of the form:
+//
+//	--task-name NAME -- COMMAND [ARGS...]
+func parseForkArgs(args []string) (taskName string, command []string, err error) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--task-name":
 			if i+1 >= len(args) {
-				return fmt.Errorf("--task-name requires an argument")
+				return "", nil, fmt.Errorf("--task-name requires an argument")
 			}
 			taskName = args[i+1]
-			i += 2
-		} else if args[i] == "--" {
+			i++
+		case "--":
 			command = args[i+1:]
-			break
-		} else {
-			// Stdio mode - all args are the command
-			command = args[i:]
-			break
+			i = len(args)
+		default:
+			return "", nil, fmt.Errorf("unexpected argument %q\nUsage: bgx fork --task-name NAME -- COMMAND [ARGS...]", args[i])
 		}
 	}
-
+	if taskName == "" {
+		return "", nil, fmt.Errorf("--task-name is required")
+	}
 	if len(command) == 0 {
-		return fmt.Errorf("no command specified")
+		return "", nil, fmt.Errorf("no command specified")
+	}
+	return taskName, command, nil
+}
+
+func runFork(args []string) error {
+	taskName, command, err := parseForkArgs(args)
+	if err != nil {
+		return err
 	}
 
-	// Determine mode
-	if taskName != "" {
-		// Named task mode
-		bgxHome := getBGXHome()
-		if err := os.MkdirAll(bgxHome, 0755); err != nil {
-			return fmt.Errorf("failed to create BGX_HOME: %w", err)
-		}
-		
-		logPath := getLogPath(taskName)
-		
-		// Check if log file already exists
-		if _, err := os.Stat(logPath); err == nil {
-			return fmt.Errorf("log file already exists: %s\nDuplicate task name? Remove the file if this is intended.", logPath)
-		}
-		
-		// Check if we're being called as the daemon (internal mode)
-		if os.Getenv("BGX_DAEMON_MODE") == "1" {
-			// We're in daemon mode - actually run the process
-			f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY, 0644)
-			if err != nil {
-				return fmt.Errorf("failed to create log file: %w", err)
-			}
-			defer f.Close()
-			
-			return executeProcess(command, f)
-		}
-		
-		// Not in daemon mode - fork ourselves into background
-		// Re-execute bgx with BGX_DAEMON_MODE=1
-		env := append(os.Environ(), "BGX_DAEMON_MODE=1")
-		
-		// Build the args for the daemon process
-		daemonArgs := []string{os.Args[0], "fork", "--task-name", taskName, "--"}
-		daemonArgs = append(daemonArgs, command...)
-		
-		cmd := exec.Command(daemonArgs[0], daemonArgs[1:]...)
-		cmd.Env = env
-		
-		// Detach from terminal
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			Setsid: true,
-		}
-		
-		// Start the daemon
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to start daemon: %w", err)
-		}
-		
-		// Release the process (don't wait)
-		cmd.Process.Release()
-		
-		// Print helpful output
-		fmt.Fprintf(os.Stderr, "Started task '%s' (log: %s)\n", taskName, logPath)
-		fmt.Fprintf(os.Stderr, "To monitor: bgx join --task-name %s\n", taskName)
-		
-	} else {
-		// Stdio mode - write to stdout, run in foreground
-		return executeProcess(command, os.Stdout)
+	db, err := openDB()
+	if err != nil {
+		return err
 	}
-	
+	defer db.Close()
+
+	// Daemon mode: we are the detached child; actually run the command.
+	if os.Getenv("BGX_DAEMON_MODE") == "1" {
+		return executeProcess(db, taskName, command)
+	}
+
+	// Parent mode: atomically claim the task name, then spawn the daemon.
+	if err := registerTask(db, taskName); err != nil {
+		if errors.Is(err, ErrTaskExists) {
+			return fmt.Errorf("task %q already exists (BGX_DB=%s)\nUse a different --task-name or remove the database.", taskName, getDBPath())
+		}
+		return err
+	}
+
+	env := append(os.Environ(), "BGX_DAEMON_MODE=1")
+	daemonArgs := []string{"fork", "--task-name", taskName, "--"}
+	daemonArgs = append(daemonArgs, command...)
+
+	cmd := exec.Command(os.Args[0], daemonArgs...)
+	cmd.Env = env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from terminal
+
+	if err := cmd.Start(); err != nil {
+		unregisterTask(db, taskName) // release the name; nothing ran
+		return fmt.Errorf("failed to start daemon: %w", err)
+	}
+	cmd.Process.Release()
+
+	fmt.Fprintf(os.Stderr, "Started task '%s' (BGX_DB: %s)\n", taskName, getDBPath())
+	fmt.Fprintf(os.Stderr, "To monitor: bgx join --task-name %s\n", taskName)
 	return nil
 }
 
-func executeProcess(command []string, writer io.Writer) error {
-	// Create the command
+// executeProcess launches the command and records its lifecycle as events.
+func executeProcess(db *sql.DB, taskName string, command []string) error {
 	cmd := exec.Command(command[0], command[1:]...)
-	
-	// Get pipes for stdout and stderr
+	// Don't leak bgx's internal daemon flag into the task; otherwise a nested
+	// `bgx fork` inside the task would think it is a daemon and not detach.
+	cmd.Env = environWithout("BGX_DAEMON_MODE")
+
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("failed to create stdout pipe: %w", err)
+		return recordStartupFailure(db, taskName, fmt.Errorf("failed to create stdout pipe: %w", err))
 	}
-	
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("failed to create stderr pipe: %w", err)
+		return recordStartupFailure(db, taskName, fmt.Errorf("failed to create stderr pipe: %w", err))
 	}
-	
-	// Start the command
+
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start command: %w", err)
+		return recordStartupFailure(db, taskName, fmt.Errorf("failed to start command: %w", err))
 	}
-	
+
 	pid := cmd.Process.Pid
-	
-	// Write start event
-	encoder := json.NewEncoder(writer)
-	if err := encoder.Encode(Event{
+	writeEvent(db, taskName, Event{
 		Type:    EventTypeStart,
 		Time:    time.Now(),
 		PID:     pid,
 		Command: command,
-	}); err != nil {
-		return fmt.Errorf("failed to write start event: %w", err)
-	}
-	
-	return runProcess(cmd, stdoutPipe, stderrPipe, writer, pid)
+	})
+
+	return runProcess(db, taskName, cmd, stdoutPipe, stderrPipe, pid)
 }
 
-func runProcess(cmd *exec.Cmd, stdoutPipe, stderrPipe io.ReadCloser, writer io.Writer, pid int) error {
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	encoder := json.NewEncoder(writer)
-	
-	// Helper to write events safely
-	writeEvent := func(event Event) {
-		mu.Lock()
-		defer mu.Unlock()
-		encoder.Encode(event)
+// recordStartupFailure writes a stderr + exit event so that a `join` waiting on
+// this task fails fast with a clear message instead of hitting a heartbeat
+// timeout. Exit code 127 mirrors the shell's "command not found".
+func recordStartupFailure(db *sql.DB, taskName string, cause error) error {
+	writeEvent(db, taskName, Event{
+		Type: EventTypeStderr,
+		Time: time.Now(),
+		Data: fmt.Sprintf("bgx: %v\n", cause),
+	})
+	writeEvent(db, taskName, Event{
+		Type: EventTypeExit,
+		Time: time.Now(),
+		Code: 127,
+	})
+	return cause
+}
+
+func runProcess(db *sql.DB, taskName string, cmd *exec.Cmd, stdoutPipe, stderrPipe io.ReadCloser, pid int) error {
+	streamOutput := func(pipe io.ReadCloser, eventType string) {
+		br := bufio.NewReader(pipe)
+		for {
+			// ReadString has no line-length limit, so arbitrarily long
+			// output lines are preserved intact.
+			line, err := br.ReadString('\n')
+			if len(line) > 0 {
+				writeEvent(db, taskName, Event{
+					Type: eventType,
+					Time: time.Now(),
+					Data: line,
+				})
+			}
+			if err != nil {
+				return
+			}
+		}
 	}
-	
-	// Stream stdout
-	wg.Add(1)
+
+	// Read both pipes to EOF before calling cmd.Wait: Wait closes the pipes,
+	// so calling it while reads are in flight would truncate output.
+	var readers sync.WaitGroup
+	readers.Add(2)
+	go func() { defer readers.Done(); streamOutput(stdoutPipe, EventTypeStdout) }()
+	go func() { defer readers.Done(); streamOutput(stderrPipe, EventTypeStderr) }()
+
+	// Emit heartbeats until the process is reaped (see close(done) below).
+	done := make(chan struct{})
+	var heartbeat sync.WaitGroup
+	heartbeat.Add(1)
 	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stdoutPipe)
-		for scanner.Scan() {
-			line := scanner.Text() + "\n"
-			writeEvent(Event{
-				Type: EventTypeStdout,
-				Time: time.Now(),
-				Data: line,
-			})
-		}
-	}()
-	
-	// Stream stderr
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderrPipe)
-		for scanner.Scan() {
-			line := scanner.Text() + "\n"
-			writeEvent(Event{
-				Type: EventTypeStderr,
-				Time: time.Now(),
-				Data: line,
-			})
-		}
-	}()
-	
-	// Heartbeat generator
-	done := make(chan bool)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+		defer heartbeat.Done()
 		ticker := time.NewTicker(HeartbeatInterval)
 		defer ticker.Stop()
-		
 		for {
 			select {
 			case <-ticker.C:
 				cpuTime, memBytes := getProcessStats(pid)
-				writeEvent(Event{
+				writeEvent(db, taskName, Event{
 					Type:       EventTypeHeartbeat,
 					Time:       time.Now(),
 					CPUSeconds: cpuTime,
@@ -203,15 +185,16 @@ func runProcess(cmd *exec.Cmd, stdoutPipe, stderrPipe io.ReadCloser, writer io.W
 			}
 		}
 	}()
-	
-	// Wait for process to complete
+
+	// Drain both pipes (readers hit EOF when the process closes its output),
+	// then reap the process. Heartbeats keep flowing until cmd.Wait returns,
+	// so a task that closes stdout/stderr but keeps running is still reported
+	// alive rather than tripping join's heartbeat timeout.
+	readers.Wait()
 	err := cmd.Wait()
-	close(done) // Stop heartbeat
-	
-	// Wait for all goroutines to finish reading
-	wg.Wait()
-	
-	// Get exit code
+	close(done)
+	heartbeat.Wait()
+
 	exitCode := 0
 	if err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
@@ -220,49 +203,76 @@ func runProcess(cmd *exec.Cmd, stdoutPipe, stderrPipe io.ReadCloser, writer io.W
 			exitCode = 1
 		}
 	}
-	
-	// Write exit event
-	writeEvent(Event{
+
+	writeEvent(db, taskName, Event{
 		Type: EventTypeExit,
 		Time: time.Now(),
 		Code: exitCode,
 	})
-	
 	return nil
 }
 
-func getProcessStats(pid int) (cpuSeconds float64, memBytes int64) {
-	// Try to read /proc/[pid]/stat for CPU time
-	statPath := fmt.Sprintf("/proc/%d/stat", pid)
-	data, err := os.ReadFile(statPath)
-	if err != nil {
-		return 0, 0
+// environWithout returns a copy of the current environment with any assignment
+// of the given key removed.
+func environWithout(key string) []string {
+	prefix := key + "="
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, prefix) {
+			out = append(out, kv)
+		}
 	}
-	
-	// Parse stat file - CPU times are fields 14 and 15 (utime and stime)
-	// This is a simplified parser
-	var comm string
-	var utime, stime uint64
-	fmt.Sscanf(string(data), "%d %s %*c %*d %*d %*d %*d %*d %*d %*d %*d %*d %*d %d %d",
-		&pid, &comm, &utime, &stime)
-	
-	// Convert clock ticks to seconds (usually 100 ticks per second)
-	clockTicks := float64(100) // syscall.CLK_TCK on most systems
-	cpuSeconds = float64(utime+stime) / clockTicks
-	
-	// Try to get RSS from statm (simpler than parsing status)
-	statmPath := fmt.Sprintf("/proc/%d/statm", pid)
-	statmData, err := os.ReadFile(statmPath)
+	return out
+}
+
+// writeEvent records an event, reporting (rather than silently dropping)
+// failures. A single database connection serializes concurrent writers.
+func writeEvent(db *sql.DB, taskName string, e Event) {
+	if err := insertEvent(db, taskName, e); err != nil {
+		fmt.Fprintf(os.Stderr, "bgx: failed to record %s event: %v\n", e.Type, err)
+	}
+}
+
+// getProcessStats reads CPU time and resident memory for a pid from /proc.
+// Returns zero values when the information is unavailable.
+func getProcessStats(pid int) (cpuSeconds float64, memBytes int64) {
+	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+		cpuSeconds, _ = parseStatCPU(string(data))
+	}
+
+	statmData, err := os.ReadFile(fmt.Sprintf("/proc/%d/statm", pid))
 	if err != nil {
 		return cpuSeconds, 0
 	}
-	
-	var size, resident uint64
-	fmt.Sscanf(string(statmData), "%d %d", &size, &resident)
-	
-	// Convert pages to bytes (usually 4096 bytes per page)
-	pageSize := int64(syscall.Getpagesize())
-	memBytes = int64(resident) * pageSize
-	
+	statmFields := strings.Fields(string(statmData))
+	if len(statmFields) < 2 {
+		return cpuSeconds, 0
+	}
+	resident, _ := strconv.ParseUint(statmFields[1], 10, 64)
+	memBytes = int64(resident) * int64(syscall.Getpagesize())
 	return cpuSeconds, memBytes
+}
+
+// parseStatCPU extracts cumulative CPU seconds (utime + stime) from the
+// contents of /proc/<pid>/stat. The comm field (field 2) is wrapped in
+// parentheses and may itself contain spaces or parentheses, so we split on the
+// last ')' rather than on whitespace. Counting from the state field that
+// follows comm, utime and stime are at indices 11 and 12.
+func parseStatCPU(stat string) (float64, bool) {
+	rparen := strings.LastIndexByte(stat, ')')
+	if rparen < 0 || rparen+2 >= len(stat) {
+		return 0, false
+	}
+	fields := strings.Fields(stat[rparen+2:])
+	if len(fields) < 13 {
+		return 0, false
+	}
+	utime, err1 := strconv.ParseUint(fields[11], 10, 64)
+	stime, err2 := strconv.ParseUint(fields[12], 10, 64)
+	if err1 != nil || err2 != nil {
+		return 0, false
+	}
+	const clockTicks = 100 // typical CLK_TCK on Linux
+	return float64(utime+stime) / clockTicks, true
 }
