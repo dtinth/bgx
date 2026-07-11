@@ -372,6 +372,90 @@ func TestNoTrailingNewline(t *testing.T) {
 	}
 }
 
+// TestJoinAfterCompletion proves join replays a task's full output and exit
+// code from the database even after the task has long since finished — the
+// fork-early/join-late pattern that CI parallelization relies on.
+func TestJoinAfterCompletion(t *testing.T) {
+	setupDB(t)
+	taskName := "done"
+
+	forkCmd := exec.Command(bgxPath, "fork", "--task-name", taskName, "--", "sh", "-c", "echo finished; exit 5")
+	if err := forkCmd.Run(); err != nil {
+		t.Fatalf("Fork failed: %v", err)
+	}
+
+	// Let the task fully complete and the daemon exit before joining.
+	time.Sleep(1 * time.Second)
+
+	joinCmd := exec.Command(bgxPath, "join", "--task-name", taskName)
+	output, err := joinCmd.CombinedOutput()
+	exitCode := 0
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		exitCode = exitErr.ExitCode()
+	} else if err != nil {
+		t.Fatalf("Join failed: %v", err)
+	}
+	if exitCode != 5 {
+		t.Errorf("Expected replayed exit code 5, got %d", exitCode)
+	}
+	if !strings.Contains(string(output), "finished") {
+		t.Errorf("Expected replayed output 'finished', got: %s", output)
+	}
+}
+
+func TestMultiJoinSuccess(t *testing.T) {
+	setupDB(t)
+
+	for _, tn := range []string{"m1", "m2"} {
+		forkCmd := exec.Command(bgxPath, "fork", "--task-name", tn, "--", "sh", "-c",
+			fmt.Sprintf("echo out-%s", tn))
+		if err := forkCmd.Run(); err != nil {
+			t.Fatalf("Fork %s failed: %v", tn, err)
+		}
+	}
+
+	joinCmd := exec.Command(bgxPath, "join", "--task-name", "m1", "--task-name", "m2")
+	output, err := joinCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Join should succeed when all tasks pass, got: %v, output: %s", err, output)
+	}
+	if !strings.Contains(string(output), "[m1] out-m1") {
+		t.Errorf("Expected prefixed '[m1] out-m1', got: %s", output)
+	}
+	if !strings.Contains(string(output), "[m2] out-m2") {
+		t.Errorf("Expected prefixed '[m2] out-m2', got: %s", output)
+	}
+}
+
+func TestMultiJoinFailurePropagates(t *testing.T) {
+	setupDB(t)
+
+	forkOK := exec.Command(bgxPath, "fork", "--task-name", "ok", "--", "sh", "-c", "echo good; exit 0")
+	if err := forkOK.Run(); err != nil {
+		t.Fatalf("Fork ok failed: %v", err)
+	}
+	forkBad := exec.Command(bgxPath, "fork", "--task-name", "bad", "--", "sh", "-c", "echo oops; exit 3")
+	if err := forkBad.Run(); err != nil {
+		t.Fatalf("Fork bad failed: %v", err)
+	}
+
+	joinCmd := exec.Command(bgxPath, "join", "--task-name", "ok", "--task-name", "bad")
+	output, err := joinCmd.CombinedOutput()
+	exitCode := 0
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		exitCode = exitErr.ExitCode()
+	} else if err != nil {
+		t.Fatalf("Join failed unexpectedly: %v", err)
+	}
+	if exitCode != 3 {
+		t.Errorf("Expected exit code 3 from the failing task, got %d", exitCode)
+	}
+	// Both tasks' output should still be surfaced (wait-all, not fail-fast).
+	if !strings.Contains(string(output), "good") || !strings.Contains(string(output), "oops") {
+		t.Errorf("Expected output from both tasks, got: %s", output)
+	}
+}
+
 func TestDaemonModeNotLeaked(t *testing.T) {
 	setupDB(t)
 	taskName := "env_leak"

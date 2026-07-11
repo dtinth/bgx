@@ -36,10 +36,8 @@ bgx fork --task-name frontend -- npm run build
 bgx fork --task-name backend -- go build ./...
 bgx fork --task-name tests -- pytest
 
-# Wait for all (in any order)
-bgx join --task-name frontend
-bgx join --task-name backend
-bgx join --task-name tests
+# Wait for all in one call (output tagged per task; fails if any failed)
+bgx join --task-name frontend --task-name backend --task-name tests
 ```
 
 ### Example 3: Custom Database Location
@@ -59,10 +57,8 @@ bgx join --task-name deploy
     bgx fork --task-name e2e-tests -- npm run e2e
     bgx fork --task-name lint -- npm run lint
 
-    # Wait for all and check exit codes
-    bgx join --task-name unit-tests
-    bgx join --task-name e2e-tests
-    bgx join --task-name lint
+    # Wait for all in one call; the step fails if any task failed
+    bgx join --task-name unit-tests --task-name e2e-tests --task-name lint
 ```
 
 ### Long-Running Deployment
