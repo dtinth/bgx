@@ -248,10 +248,17 @@ jobs:
     - name: Join in a later step (proves cross-step survival + replay)
       shell: pwsh
       run: |
+        # A non-zero native exit is expected below (the failing task), so stop
+        # PowerShell from turning it into a step error; we assert on the codes
+        # ourselves and exit 0 explicitly so the leftover code doesn't fail us.
+        $PSNativeCommandUseErrorActionPreference = $false
+
         .\bgx.exe join --group --task-name w-ok --task-name w-build
         if ($LASTEXITCODE -ne 0) { throw "successful join should exit 0, got $LASTEXITCODE" }
 
         .\bgx.exe join --task-name w-fail
-        if ($LASTEXITCODE -ne 3) { throw "failing task should exit 3, got $LASTEXITCODE" }
+        $failCode = $LASTEXITCODE
+        if ($failCode -ne 3) { throw "failing task should exit 3, got $failCode" }
 
         Write-Host "Windows cross-step fork/join smoke test passed."
+        exit 0
