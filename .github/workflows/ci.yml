@@ -36,7 +36,7 @@ jobs:
     
     strategy:
       matrix:
-        goos: [linux, darwin] # windows is not supported yet
+        goos: [linux, darwin, windows]
         goarch: [amd64, arm64]
     
     steps:
@@ -131,3 +131,124 @@ jobs:
         # Show recorded events
         echo "=== Sample events (task1) ==="
         sqlite3 "$BGX_DB" "SELECT type, data FROM events WHERE task='task1' ORDER BY id"
+
+  smoke-test-cross-step:
+    name: Smoke Test (cross-step fork/join)
+    runs-on: ubuntu-latest
+    needs: test
+    # A stable per-job path shared by every step: this is what lets a task
+    # forked in one step be joined in a later one.
+    env:
+      BGX_DB: ${{ runner.temp }}/bgx-smoke.db
+
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'go.mod'
+
+    - name: Build and install on PATH
+      run: |
+        go build -v -o bgx
+        echo "$PWD" >> "$GITHUB_PATH"
+
+    - name: Fork background tasks (they must outlive this step)
+      run: |
+        bgx fork --task-name slow -- bash -c 'for i in $(seq 1 5); do echo "slow $i"; sleep 1; done; echo slow-done'
+        bgx fork --task-name ok   -- bash -c 'echo ok-running; sleep 2; echo ok-done; exit 0'
+        bgx fork --task-name fail -- bash -c 'echo fail-running; sleep 1; echo fail-boom; exit 3'
+
+    - name: Do unrelated work in a separate step
+      run: |
+        echo "The forked daemons keep running on the runner while this step executes."
+        sleep 2
+
+    - name: exec records a foreground command (observability)
+      run: |
+        bgx exec --task-name build -- bash -c 'echo building; echo compiled; exit 0'
+
+    - name: Join in a later step (proves cross-step survival + replay)
+      run: |
+        # Grouped, timestamped join of the successful tasks.
+        bgx join --group --timestamps --task-name slow --task-name ok --task-name build
+
+        # A failing task must propagate its exit code so the step fails.
+        set +e
+        bgx join --task-name fail
+        code=$?
+        set -e
+        echo "fail task exited with: $code"
+        if [ "$code" -ne 3 ]; then
+          echo "ERROR: expected exit code 3 from the failing task, got $code"
+          exit 1
+        fi
+
+        # Multi-join wait-all: surfaces every task's output, exits non-zero.
+        set +e
+        bgx join --task-name ok --task-name fail
+        multi=$?
+        set -e
+        if [ "$multi" -ne 3 ]; then
+          echo "ERROR: multi-join should propagate exit code 3, got $multi"
+          exit 1
+        fi
+
+        echo "Cross-step fork/join smoke test passed."
+
+    - name: Upload the task database as an artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: bgx-smoke-db
+        path: ${{ runner.temp }}/bgx-smoke.db
+
+  smoke-test-windows:
+    name: Smoke Test (Windows cross-step)
+    runs-on: windows-latest
+    needs: test
+    env:
+      BGX_DB: ${{ runner.temp }}\bgx-smoke.db
+
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'go.mod'
+
+    - name: Build
+      run: go build -v -o bgx.exe
+
+    # Single-word args avoid cmd.exe's quote-stripping quirks: `echo ok-running`
+    # prints output, `exit 3` sets the exit code we assert on below.
+    - name: Fork background tasks (they must outlive this step)
+      shell: pwsh
+      run: |
+        .\bgx.exe fork --task-name w-ok   -- cmd /c echo ok-running
+        .\bgx.exe fork --task-name w-fail -- cmd /c exit 3
+
+    - name: Do unrelated work in a separate step
+      shell: pwsh
+      run: Start-Sleep -Seconds 3
+
+    - name: exec records a foreground command
+      shell: pwsh
+      run: |
+        .\bgx.exe exec --task-name w-build -- cmd /c echo compiled
+        if ($LASTEXITCODE -ne 0) { throw "exec should exit 0, got $LASTEXITCODE" }
+
+    - name: Join in a later step (proves cross-step survival + replay)
+      shell: pwsh
+      run: |
+        .\bgx.exe join --group --task-name w-ok --task-name w-build
+        if ($LASTEXITCODE -ne 0) { throw "successful join should exit 0, got $LASTEXITCODE" }
+
+        .\bgx.exe join --task-name w-fail
+        if ($LASTEXITCODE -ne 3) { throw "failing task should exit 3, got $LASTEXITCODE" }
+
+        Write-Host "Windows cross-step fork/join smoke test passed."

@@ -15,8 +15,9 @@ sudo mv bgx /usr/local/bin/
 
 ### Pre-built Binaries
 Download from GitHub releases for your platform:
-- Linux: `bgx-linux-amd64` or `bgx-linux-arm64`
-- macOS: `bgx-darwin-amd64` or `bgx-darwin-arm64`
+- Linux: `bgx_Linux_x86_64.tar.gz` or `bgx_Linux_arm64.tar.gz`
+- macOS: `bgx_Darwin_x86_64.tar.gz` or `bgx_Darwin_arm64.tar.gz`
+- Windows: `bgx_Windows_x86_64.zip` or `bgx_Windows_arm64.zip`
 
 ## Quick Examples
 
@@ -40,7 +41,17 @@ bgx fork --task-name tests -- pytest
 bgx join --task-name frontend --task-name backend --task-name tests
 ```
 
-### Example 3: Custom Database Location
+### Example 3: Foreground with Recording (`exec`)
+```bash
+# Run in the foreground (output streams live, exits with the command's code),
+# but capture the whole run to the database for later inspection.
+bgx exec --task-name build -- make build
+
+# Inspect afterwards (or upload $BGX_DB as a CI artifact).
+sqlite3 "$BGX_DB" "SELECT type, data FROM events WHERE task='build' ORDER BY id"
+```
+
+### Example 4: Custom Database Location
 ```bash
 export BGX_DB=/var/tmp/my-app.db
 bgx fork --task-name deploy -- ./deploy.sh

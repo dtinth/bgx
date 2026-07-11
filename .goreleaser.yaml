@@ -22,11 +22,10 @@ builds:
     binary: bgx
     env:
       - CGO_ENABLED=0
-    # bgx reads /proc, so it only runs on Linux; darwin builds are kept for
-    # parity with existing CI but the tool is a no-op there at runtime.
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -39,7 +38,12 @@ builds:
 archives:
   - id: bgx
     formats: [tar.gz]
-    # Name template chosen for ubi/mise auto-detection: Linux/Darwin + x86_64/arm64.
+    # Windows archives use zip, matching the convention ubi/mise expect.
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    # Name template chosen for ubi/mise auto-detection: Linux/Darwin/Windows +
+    # x86_64/arm64.
     name_template: >-
       {{ .ProjectName }}_
       {{- title .Os }}_

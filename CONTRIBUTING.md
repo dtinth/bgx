@@ -30,8 +30,11 @@ go test -v -cover ./...
 - `main.go` - CLI entry point and command routing
 - `types.go` - Event types and constants
 - `db.go` - Shared SQLite database (schema, task registration, event I/O)
-- `fork.go` - Process forking and monitoring
+- `fork.go` - Background forking, process supervision, event recording
+- `exec.go` - Foreground execution that also records to the database
 - `join.go` - Event polling and output replication
+- `detach_unix.go` / `detach_windows.go` - Platform-specific daemon detach flags
+- `procstats_linux.go` / `procstats_other.go` - Platform-specific `/proc` resource stats
 - `bgx_test.go` - Acceptance tests
 
 ## Adding New Features

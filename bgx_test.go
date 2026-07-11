@@ -516,6 +516,114 @@ func TestJoinTimestamps(t *testing.T) {
 	}
 }
 
+// TestExecForeground verifies `bgx exec` runs the command in the foreground,
+// mirrors its output to the terminal, records the lifecycle to the database,
+// and exits with the command's exit code.
+func TestExecForeground(t *testing.T) {
+	dbPath := setupDB(t)
+	taskName := "exec_fg"
+
+	execCmd := exec.Command(bgxPath, "exec", "--task-name", taskName, "--", "sh", "-c",
+		"echo out-line; echo err-line >&2; exit 9")
+	var stdout, stderr strings.Builder
+	execCmd.Stdout = &stdout
+	execCmd.Stderr = &stderr
+	err := execCmd.Run()
+
+	exitCode := 0
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		exitCode = exitErr.ExitCode()
+	} else if err != nil {
+		t.Fatalf("Exec failed unexpectedly: %v", err)
+	}
+	if exitCode != 9 {
+		t.Errorf("Expected exec to exit with the command's code 9, got %d", exitCode)
+	}
+
+	// Output is mirrored live to the terminal, on the right streams.
+	if !strings.Contains(stdout.String(), "out-line") {
+		t.Errorf("Expected 'out-line' mirrored to stdout, got: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "err-line") {
+		t.Errorf("Expected 'err-line' mirrored to stderr, got: %q", stderr.String())
+	}
+
+	// The run is also persisted for later inspection (the observability point).
+	events := readEvents(t, dbPath, taskName)
+	if len(events) == 0 {
+		t.Fatal("Exec should record events")
+	}
+	if events[0].Type != EventTypeStart {
+		t.Errorf("First event should be 'start', got: %s", events[0].Type)
+	}
+	last := events[len(events)-1]
+	if last.Type != EventTypeExit || last.Code != 9 {
+		t.Errorf("Last event should be exit with code 9, got: %s code %d", last.Type, last.Code)
+	}
+	sawStdout, sawStderr := false, false
+	for _, e := range events {
+		switch e.Type {
+		case EventTypeStdout:
+			sawStdout = true
+		case EventTypeStderr:
+			sawStderr = true
+		}
+	}
+	if !sawStdout || !sawStderr {
+		t.Errorf("Exec should record both stdout and stderr events (stdout=%v stderr=%v)", sawStdout, sawStderr)
+	}
+}
+
+// TestExecThenJoin verifies a task run via exec can be joined afterwards,
+// replaying its recorded output and exit code just like a forked task.
+func TestExecThenJoin(t *testing.T) {
+	setupDB(t)
+	taskName := "exec_join"
+
+	execCmd := exec.Command(bgxPath, "exec", "--task-name", taskName, "--", "sh", "-c", "echo recorded; exit 4")
+	if _, err := execCmd.CombinedOutput(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 4 {
+			t.Fatalf("Exec failed unexpectedly: %v", err)
+		}
+	}
+
+	joinCmd := exec.Command(bgxPath, "join", "--task-name", taskName)
+	output, err := joinCmd.CombinedOutput()
+	exitCode := 0
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		exitCode = exitErr.ExitCode()
+	} else if err != nil {
+		t.Fatalf("Join failed: %v", err)
+	}
+	if exitCode != 4 {
+		t.Errorf("Expected replayed exit code 4, got %d", exitCode)
+	}
+	if !strings.Contains(string(output), "recorded") {
+		t.Errorf("Expected replayed output 'recorded', got: %s", output)
+	}
+}
+
+// TestExecDuplicateName verifies exec claims the task name like fork does, so a
+// name already in use is rejected rather than silently appended to.
+func TestExecDuplicateName(t *testing.T) {
+	setupDB(t)
+	taskName := "exec_dup"
+
+	first := exec.Command(bgxPath, "exec", "--task-name", taskName, "--", "echo", "first")
+	if err := first.Run(); err != nil {
+		t.Fatalf("First exec failed: %v", err)
+	}
+
+	second := exec.Command(bgxPath, "exec", "--task-name", taskName, "--", "echo", "second")
+	output, err := second.CombinedOutput()
+	if err == nil {
+		t.Error("Second exec with a duplicate name should fail")
+	}
+	if !strings.Contains(string(output), "already exists") {
+		t.Errorf("Error should mention already exists, got: %s", output)
+	}
+}
+
 func TestDaemonModeNotLeaked(t *testing.T) {
 	setupDB(t)
 	taskName := "env_leak"
