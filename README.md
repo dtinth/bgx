@@ -215,18 +215,35 @@ sqlite3 "$BGX_DB" "SELECT type, data FROM events WHERE task='build' ORDER BY id"
 
 ## Releasing
 
-Releases are automated with [GoReleaser](https://goreleaser.com) via
-`.github/workflows/release.yml`. To cut a release, push a semver tag:
+Releases are automated from git — you never push a tag by hand.
+[release-please](https://github.com/googleapis/release-please) watches `main`
+and, from the [Conventional Commits](https://www.conventionalcommits.org) since
+the last release, maintains a **release PR** that bumps the version and updates
+`CHANGELOG.md`. Merging that PR publishes the release: release-please creates the
+GitHub Release + tag, then [GoReleaser](https://goreleaser.com) attaches the
+cross-compiled binaries (linux/darwin/windows × amd64/arm64) as
+`bgx_<Os>_<Arch>.tar.gz` archives (`.zip` on Windows) plus `checksums.txt`. The
+archive names are chosen so mise's `github:` backend can resolve the right asset
+automatically.
 
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
+So, to cut a release:
 
-The workflow cross-compiles binaries (linux/darwin/windows × amd64/arm64),
-packages them as `bgx_<Os>_<Arch>.tar.gz` archives (`.zip` on Windows) with a
-`checksums.txt`, and publishes a GitHub Release. The archive names are chosen so
-mise's `github:` backend can resolve the right asset automatically.
+1. Land changes on `main` using Conventional Commit messages (`feat:`, `fix:`,
+   `feat!:`/`BREAKING CHANGE:` for a major bump). `feat:` drives a minor bump,
+   `fix:` a patch bump.
+2. Merge the release PR that release-please opens. That's it.
+
+This is wired up in `.github/workflows/release.yml` (release-please → GoReleaser
+in one run) with `release-please-config.json` and `.release-please-manifest.json`.
+
+### One-time setup
+
+The release workflow authenticates as a GitHub App via
+[Octo STS](https://github.com/octo-sts/app) and OIDC (short-lived token, no
+stored PAT), so the release PR runs CI and is authored by the app. This requires
+the [Octo STS app](https://github.com/apps/octo-sts) to be installed on the
+repository; the token it may request is constrained by the trust policy in
+`.github/chainguard/release-please.sts.yaml`.
 
 ## Limitations
 

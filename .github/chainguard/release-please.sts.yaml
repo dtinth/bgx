@@ -1,0 +1,17 @@
+# Octo STS trust policy: lets the Release workflow, when running on the main
+# branch of this repo, federate a short-lived GitHub App token via OIDC instead
+# of using a long-lived PAT. release-please uses this token so that:
+#   - the release PR it opens triggers CI (a PR opened with GITHUB_TOKEN would
+#     not), and
+#   - the PR/release are authored by the app rather than requiring the
+#     "Allow GitHub Actions to create and approve pull requests" org setting.
+#
+# The identity ("release-please") matches the `identity:` input in the workflow.
+# Requires the Octo STS GitHub App (https://github.com/apps/octo-sts) to be
+# installed on this repository.
+issuer: https://token.actions.githubusercontent.com
+subject: repo:dtinth/bgx:ref:refs/heads/main
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
