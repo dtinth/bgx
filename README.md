@@ -131,29 +131,36 @@ sqlite3 "$BGX_DB" "SELECT task, type, data FROM events ORDER BY id"
 
 ## CI parallelization
 
-The intended pattern: `fork` slow, independent setup work up front, keep doing
-other work, then `join` each task right before you need its result. The join
-both surfaces the output and gates on success, so a failed background task
-fails the step.
+The intended pattern: `fork` slow work that a *later* step needs but the *next*
+step doesn't, keep doing that independent work meanwhile, then `join` right
+before you consume the result. The join both surfaces the output and gates on
+success, so a failed background task fails the step.
+
+In the example below, pulling the database image and downloading test fixtures
+are slow and independent of building the app — so they run in the background
+while the build proceeds, and the integration tests (which need all three) wait
+on them at the end:
+
+```yaml
+- name: Prefetch slow dependencies in the background
+  run: |
+    bgx fork --task-name image    -- docker pull ghcr.io/example/db:16
+    bgx fork --task-name fixtures -- ./scripts/download-fixtures.sh
+
+- name: Build the app (doesn't need the image or fixtures)
+  run: npm run build
+
+- name: Integration tests — wait for the prefetch, fail if any failed
+  run: |
+    bgx join --task-name image --task-name fixtures
+    npm run test:integration
+```
 
 No configuration is needed. On GitHub Actions, `fork` and `join` default to
 `$RUNNER_TEMP/bgx.db` — the same directory for every step in a job, so they find
 each other automatically. Because `RUNNER_TEMP` is unique per job (and wiped
 when the job ends), concurrent jobs never collide, even on **self-hosted or
-reused runners**:
-
-```yaml
-- name: Start background setup
-  run: |
-    bgx fork --task-name deps  -- npm ci
-    bgx fork --task-name image -- docker pull ghcr.io/example/base:latest
-
-- name: Build (runs concurrently with the setup above)
-  run: ./build.sh
-
-- name: Wait for setup, fail if any failed
-  run: bgx join --task-name deps --task-name image
-```
+reused runners**.
 
 Set `BGX_DB` only if you want a specific path (for example, to keep the database
 outside the temp directory so it survives for inspection).
