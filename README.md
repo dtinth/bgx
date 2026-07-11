@@ -12,8 +12,11 @@ bgx join --task-name build
 
 - When you run `bgx fork`, it detaches the command into the background and records its output, resource usage, and exit code as events in a shared SQLite database.
 - When you run `bgx join`, it replays those events from the database — streaming stdout/stderr live and exiting with the command's exit code.
+- When you run `bgx exec`, it runs the command in the *foreground* (mirroring its output) while recording the same events — handy when you just want the log captured for later analysis.
 
 Because every command shares one database file, independent processes (for example, parallel steps within a CI job) can fork and join tasks concurrently without juggling per-task log files.
+
+Runs on Linux, macOS, and Windows. (CPU/memory heartbeats are Linux-only; everything else works everywhere.)
 
 ## Installation
 
@@ -107,6 +110,25 @@ ok  	./...	0.42s
 ::endgroup::
 ```
 
+### Recording a foreground command with `exec`
+
+`bgx exec` runs a command in the foreground — you see its output live and it
+exits with the command's exit code, exactly as if you had run the command
+directly — but the full run (output, exit code, resource heartbeats) is also
+recorded to the database. Nothing is detached; there is no separate `join`.
+
+```bash
+bgx exec --task-name build -- make build
+```
+
+This is useful for observability: run each step through `bgx exec`, then upload
+the database as a build artifact and inspect every step's captured output and
+timing after the fact.
+
+```bash
+sqlite3 "$BGX_DB" "SELECT task, type, data FROM events ORDER BY id"
+```
+
 ## CI parallelization
 
 The intended pattern: `fork` slow, independent setup work up front, keep doing
@@ -174,13 +196,13 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-The workflow cross-compiles binaries (linux/darwin × amd64/arm64), packages
-them as `bgx_<Os>_<Arch>.tar.gz` archives with a `checksums.txt`, and publishes
-a GitHub Release. The archive names are chosen so mise's `github:` backend can
-resolve the right asset automatically.
+The workflow cross-compiles binaries (linux/darwin/windows × amd64/arm64),
+packages them as `bgx_<Os>_<Arch>.tar.gz` archives (`.zip` on Windows) with a
+`checksums.txt`, and publishes a GitHub Release. The archive names are chosen so
+mise's `github:` backend can resolve the right asset automatically.
 
 ## Limitations
 
-- Resource stats (CPU/memory heartbeats) only work on Linux (they read `/proc`).
+- Resource stats (CPU/memory heartbeats) only work on Linux (they read `/proc`); on macOS and Windows heartbeats are still emitted but carry zero stats.
 - The shared database must live on a local filesystem — SQLite locking is unsafe over NFS, so parallel steps must share a machine, not just a database path.
 - No built-in cleanup of old tasks (delete the database file, or rows, to reset).

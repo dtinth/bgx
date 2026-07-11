@@ -26,6 +26,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "exec":
+		exitCode, err := runExec(os.Args[2:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
+		os.Exit(exitCode)
 	case "join":
 		exitCode, err := runJoin(os.Args[2:])
 		if err != nil {
@@ -47,8 +53,16 @@ func printUsage() {
 
 Usage:
   bgx fork --task-name NAME -- COMMAND [ARGS...]
+  bgx exec --task-name NAME -- COMMAND [ARGS...]
   bgx join --task-name NAME [--task-name NAME ...] [--group] [--timestamps]
   bgx version
+
+Commands:
+  fork    Run COMMAND in the background and record it; returns immediately.
+  exec    Run COMMAND in the foreground, mirroring its output, while also
+          recording it; exits with the command's exit code.
+  join    Replay a task's recorded output and exit with its exit code,
+          waiting for the task to finish if it is still running.
 
 Join options:
   --group        Wrap each task's output in a GitHub Actions ::group:: block
