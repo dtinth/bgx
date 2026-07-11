@@ -1,0 +1,64 @@
+# GoReleaser configuration for bgx
+# Docs: https://goreleaser.com
+#
+# Release flow:
+#   git tag v1.0.0 && git push origin v1.0.0
+# The tag push triggers .github/workflows/release.yml, which runs this config.
+#
+# The produced assets (e.g. bgx_Linux_x86_64.tar.gz) are named with OS/arch
+# tokens that mise's `github:` backend (ubi-style detection) resolves
+# automatically, so `mise use -g github:dtinth/bgx` just works.
+version: 2
+
+project_name: bgx
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: bgx
+    main: .
+    binary: bgx
+    env:
+      - CGO_ENABLED=0
+    # bgx reads /proc, so it only runs on Linux; darwin builds are kept for
+    # parity with existing CI but the tool is a no-op there at runtime.
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+
+archives:
+  - id: bgx
+    formats: [tar.gz]
+    # Name template chosen for ubi/mise auto-detection: Linux/Darwin + x86_64/arm64.
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  draft: false
+  prerelease: auto

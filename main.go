@@ -10,6 +10,13 @@ const (
 	defaultBGXHome = "/tmp/bgx"
 )
 
+// Build information, set via -ldflags at release time by GoReleaser.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func getBGXHome() string {
 	if home := os.Getenv("BGX_HOME"); home != "" {
 		return home
@@ -42,6 +49,8 @@ func main() {
 			os.Exit(1)
 		}
 		os.Exit(exitCode)
+	case "version", "--version", "-v":
+		fmt.Printf("bgx %s (commit %s, built %s)\n", version, commit, date)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", command)
 		printUsage()
@@ -55,6 +64,7 @@ func printUsage() {
 Usage:
   bgx fork [--task-name NAME] -- COMMAND [ARGS...]
   bgx join [--task-name NAME]
+  bgx version
 
 Modes:
   Named task mode (detached):
