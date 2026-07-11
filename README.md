@@ -136,26 +136,36 @@ other work, then `join` each task right before you need its result. The join
 both surfaces the output and gates on success, so a failed background task
 fails the step.
 
+No configuration is needed — `fork` and `join` default to `<tmpdir>/bgx.db`
+(e.g. `/tmp/bgx.db`), which is the same directory for every step in a job, so
+they find each other automatically:
+
 ```yaml
 - name: Start background setup
   run: |
-    export BGX_DB="$RUNNER_TEMP/bgx.db"
     bgx fork --task-name deps  -- npm ci
     bgx fork --task-name image -- docker pull ghcr.io/example/base:latest
 
 - name: Build (runs concurrently with the setup above)
-  run: |
-    export BGX_DB="$RUNNER_TEMP/bgx.db"
-    ./build.sh
+  run: ./build.sh
 
 - name: Wait for setup, fail if any failed
-  run: |
-    export BGX_DB="$RUNNER_TEMP/bgx.db"
-    bgx join --task-name deps --task-name image
+  run: bgx join --task-name deps --task-name image
 ```
 
-Set `BGX_DB` to a stable path shared by every step (as above) so `fork` and
-`join` in different steps talk to the same database.
+**Self-hosted or reused runners:** the default database lives at a machine-wide
+path, so concurrent jobs on the same runner would share it and collide on task
+names (bgx has no automatic cleanup). Point `BGX_DB` at the per-job temp
+directory to isolate each job — `$RUNNER_TEMP` is unique per job and wiped when
+it ends. Set it once via `$GITHUB_ENV` and every later step inherits it:
+
+```yaml
+- name: Setup
+  run: echo "BGX_DB=$RUNNER_TEMP/bgx.db" >> "$GITHUB_ENV"
+```
+
+(GitHub-hosted runners give each job a fresh VM, so there is nothing to collide
+with and the default is fine.)
 
 ## Configuration
 
