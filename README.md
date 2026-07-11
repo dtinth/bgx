@@ -3,12 +3,20 @@
 A lightweight tool for running commands in the background, designed for parallel execution in CI/CD pipelines like GitHub Actions.
 
 ```bash
-# Start building something in the background
-bgx fork --task-name build -- make build
+# Pull images and start Postgres + Redis in the background...
+bgx fork --task-name services -- docker compose up -d --wait postgres redis
 
-# Wait for the task to finish (stream stdout, stderr, and exit code)
-bgx join --task-name build
+# ...while you install dependencies in the foreground (they don't need the services yet)
+npm ci
+
+# Block until the services are up, then run the tests that need them
+bgx join --task-name services
+npm test
 ```
+
+`docker compose up -d --wait` and `npm ci` run at the same time instead of one
+after the other; `join` waits for the services to be ready (and fails the step
+if they didn't come up) before the tests start.
 
 - When you run `bgx fork`, it detaches the command into the background and records its output, resource usage, and exit code as events in a shared SQLite database.
 - When you run `bgx join`, it replays those events from the database — streaming stdout/stderr live and exiting with the command's exit code.
