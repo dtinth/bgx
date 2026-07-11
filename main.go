@@ -70,5 +70,7 @@ Environment:
 Configuration:
   Heartbeat interval: 5s
   Heartbeat timeout: 30s
+
+Homepage: https://github.com/dtinth/bgx
 `)
 }
