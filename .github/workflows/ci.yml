@@ -18,7 +18,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.22'
+        go-version-file: 'go.mod'
     
     - name: Build
       run: go build -v -o bgx
@@ -46,7 +46,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.22'
+        go-version-file: 'go.mod'
     
     - name: Build binary
       env:
@@ -78,7 +78,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.22'
+        go-version-file: 'go.mod'
     
     - name: Build
       run: go build -v -o bgx
@@ -86,9 +86,8 @@ jobs:
     - name: Test parallel execution
       run: |
         # This demonstrates BGX's actual use case!
-        export BGX_HOME="/tmp/bgx_integration"
-        mkdir -p "$BGX_HOME"
-        
+        export BGX_DB="/tmp/bgx_integration.db"
+
         echo "Starting 3 parallel tasks..."
         ./bgx fork --task-name task1 -- sh -c 'echo "Task 1 running"; sleep 2; echo "Task 1 done"; exit 1'
         ./bgx fork --task-name task2 -- sh -c 'echo "Task 2 running"; sleep 2; echo "Task 2 done"; exit 0'
@@ -128,10 +127,7 @@ jobs:
         fi
         
         echo "All exit codes correct!"
-        
-        # Show log files
-        echo "=== Log files ==="
-        ls -lh "$BGX_HOME"
-        
-        echo "=== Sample log content (task1) ==="
-        cat "$BGX_HOME/task1.ndjson"
+
+        # Show recorded events
+        echo "=== Sample events (task1) ==="
+        sqlite3 "$BGX_DB" "SELECT type, data FROM events WHERE task='task1' ORDER BY id"

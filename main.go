@@ -3,11 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-)
-
-const (
-	defaultBGXHome = "/tmp/bgx"
 )
 
 // Build information, set via -ldflags at release time by GoReleaser.
@@ -16,17 +11,6 @@ var (
 	commit  = "none"
 	date    = "unknown"
 )
-
-func getBGXHome() string {
-	if home := os.Getenv("BGX_HOME"); home != "" {
-		return home
-	}
-	return defaultBGXHome
-}
-
-func getLogPath(taskName string) string {
-	return filepath.Join(getBGXHome(), taskName+".ndjson")
-}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -62,21 +46,19 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `bgx - Background task executor with structured logging
 
 Usage:
-  bgx fork [--task-name NAME] -- COMMAND [ARGS...]
-  bgx join [--task-name NAME]
+  bgx fork --task-name NAME -- COMMAND [ARGS...]
+  bgx join --task-name NAME
   bgx version
 
-Modes:
-  Named task mode (detached):
-    bgx fork --task-name task1 -- sleep 10
-    bgx join --task-name task1
+Example:
+  bgx fork --task-name build -- make build
+  bgx join --task-name build
 
-  Stdio mode (pipelined):
-    bgx fork sleep 10 > task1.log
-    tail -f task1.log | bgx join
+Tasks are recorded in a shared SQLite database, so independent processes
+(for example, parallel steps in CI) can fork and join tasks concurrently.
 
 Environment:
-  BGX_HOME    Directory for log files (default: /tmp/bgx)
+  BGX_DB    Path to the shared database (default: <tmpdir>/bgx.db)
 
 Configuration:
   Heartbeat interval: 5s

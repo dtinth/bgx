@@ -3,15 +3,17 @@
 A lightweight tool for running commands in the background, designed for parallel execution in CI/CD pipelines like GitHub Actions.
 
 ```bash
-# Start build something in background
-bgx fork --task-name task1 -- make build
+# Start building something in the background
+bgx fork --task-name build -- make build
 
 # Wait for the task to finish (stream stdout, stderr, and exit code)
-bgx join --task-name build1
+bgx join --task-name build
 ```
 
-- When you run `bgx fork`, it creates a log file (e.g. `/tmp/bgx/build1.ndjson`) and start streaming the process output and exit code to that file.
-- When you run `bgx join`, it will tail from that file and replay it.
+- When you run `bgx fork`, it detaches the command into the background and records its output, resource usage, and exit code as events in a shared SQLite database.
+- When you run `bgx join`, it replays those events from the database — streaming stdout/stderr live and exiting with the command's exit code.
+
+Because every command shares one database file, independent processes (for example, parallel steps within a CI job) can fork and join tasks concurrently without juggling per-task log files.
 
 ## Installation
 
@@ -41,22 +43,20 @@ Grab a prebuilt archive from the [releases page](https://github.com/dtinth/bgx/r
 
 ## Usage
 
-### Named Task Mode (Detached)
-
 Fork a task with a name:
 ```bash
-bgx fork --task-name build1 -- make build
+bgx fork --task-name build -- make build
 ```
 
 Output:
 ```
-Started task 'build1' (log: /tmp/bgx/build1.ndjson)
-To monitor: bgx join --task-name build1
+Started task 'build' (BGX_DB: /tmp/bgx.db)
+To monitor: bgx join --task-name build
 ```
 
 Join (monitor) the task:
 ```bash
-bgx join --task-name build1
+bgx join --task-name build
 ```
 
 This will:
@@ -64,34 +64,33 @@ This will:
 - Wait for the process to complete
 - Exit with the same exit code as the original command
 
-### Stdio Mode (Pipelined)
-
-Fork with output to file:
-```bash
-bgx fork sleep 10 > task1.log
-```
-
-Join by piping the log:
-```bash
-tail -f task1.log | bgx join
-```
-
 ## Configuration
 
 ### Environment Variables
 
-- **BGX_HOME**: Directory for log files (default: `/tmp/bgx`)
+- **BGX_DB**: Path to the shared SQLite database (default: `<tmpdir>/bgx.db`, e.g. `/tmp/bgx.db`)
 
-## Log Format
+## Storage Format
 
-BGX uses NDJSON (newline-delimited JSON) for structured logging:
+BGX records each task's lifecycle as rows in an `events` table:
 
-```json
-{"type":"start","time":"2026-01-12T10:30:00Z","pid":12345,"command":["sleep","10"]}
-{"type":"stdout","time":"2026-01-12T10:30:01Z","data":"Output line\n"}
-{"type":"stderr","time":"2026-01-12T10:30:01Z","data":"Error line\n"}
-{"type":"heartbeat","time":"2026-01-12T10:30:05Z","cpu_seconds":1.2,"mem_bytes":4096}
-{"type":"exit","time":"2026-01-12T10:30:10Z","code":0}
+| column      | description                                    |
+|-------------|------------------------------------------------|
+| id          | monotonic event id (used as the read cursor)   |
+| task        | task name                                      |
+| type        | `start`, `stdout`, `stderr`, `heartbeat`, `exit` |
+| time        | RFC3339 timestamp                              |
+| data        | output line (for stdout/stderr)                |
+| pid         | process id (start event)                       |
+| command     | JSON-encoded command (start event)             |
+| code        | exit code (exit event)                         |
+| cpu_seconds | cumulative CPU time (heartbeat event)          |
+| mem_bytes   | resident memory (heartbeat event)              |
+
+Inspect a task directly with the `sqlite3` CLI:
+
+```bash
+sqlite3 "$BGX_DB" "SELECT type, data FROM events WHERE task='build' ORDER BY id"
 ```
 
 ## Releasing
@@ -111,5 +110,6 @@ resolve the right asset automatically.
 
 ## Limitations
 
-- It only work on Linux right now (reads /proc)
-- No built-in cleanup of old log files (manual cleanup needed)
+- Resource stats (CPU/memory heartbeats) only work on Linux (they read `/proc`).
+- The shared database must live on a local filesystem — SQLite locking is unsafe over NFS, so parallel steps must share a machine, not just a database path.
+- No built-in cleanup of old tasks (delete the database file, or rows, to reset).
