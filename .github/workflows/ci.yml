@@ -146,14 +146,13 @@ jobs:
       with:
         go-version-file: 'go.mod'
 
-    - name: Build, install on PATH, set a shared DB path
+    # No BGX_DB is set: this exercises the zero-config default (<tmpdir>/bgx.db,
+    # i.e. /tmp/bgx.db), which is the same directory for every step in a job, so
+    # a task forked in one step is found by a join in a later one.
+    - name: Build and install on PATH
       run: |
         go build -v -o bgx
         echo "$PWD" >> "$GITHUB_PATH"
-        # A stable per-job path shared by every later step: this is what lets a
-        # task forked in one step be joined in a later one. (runner.temp is not
-        # available in job-level env, so export it here via GITHUB_ENV.)
-        echo "BGX_DB=$RUNNER_TEMP/bgx-smoke.db" >> "$GITHUB_ENV"
 
     - name: Fork background tasks (they must outlive this step)
       run: |
@@ -203,7 +202,8 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: bgx-smoke-db
-        path: ${{ env.BGX_DB }}
+        path: /tmp/bgx.db # bgx's default database location
+        if-no-files-found: warn
 
   smoke-test-windows:
     name: Smoke Test (Windows cross-step)
@@ -219,13 +219,11 @@ jobs:
       with:
         go-version-file: 'go.mod'
 
-    - name: Build and set a shared DB path
-      shell: pwsh
-      run: |
-        go build -v -o bgx.exe
-        # runner.temp is not available in job-level env; export a shared path
-        # here so every later step joins the same database.
-        "BGX_DB=$env:RUNNER_TEMP\bgx-smoke.db" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+    # No BGX_DB is set: this exercises the zero-config default (the same temp
+    # directory for every step in a job), so a task forked in one step is found
+    # by a join in a later one.
+    - name: Build
+      run: go build -v -o bgx.exe
 
     # Single-word args avoid cmd.exe's quote-stripping quirks: `echo ok-running`
     # prints output, `exit 3` sets the exit code we assert on below.
