@@ -136,9 +136,11 @@ other work, then `join` each task right before you need its result. The join
 both surfaces the output and gates on success, so a failed background task
 fails the step.
 
-No configuration is needed — `fork` and `join` default to `<tmpdir>/bgx.db`
-(e.g. `/tmp/bgx.db`), which is the same directory for every step in a job, so
-they find each other automatically:
+No configuration is needed. On GitHub Actions, `fork` and `join` default to
+`$RUNNER_TEMP/bgx.db` — the same directory for every step in a job, so they find
+each other automatically. Because `RUNNER_TEMP` is unique per job (and wiped
+when the job ends), concurrent jobs never collide, even on **self-hosted or
+reused runners**:
 
 ```yaml
 - name: Start background setup
@@ -153,25 +155,14 @@ they find each other automatically:
   run: bgx join --task-name deps --task-name image
 ```
 
-**Self-hosted or reused runners:** the default database lives at a machine-wide
-path, so concurrent jobs on the same runner would share it and collide on task
-names (bgx has no automatic cleanup). Point `BGX_DB` at the per-job temp
-directory to isolate each job — `$RUNNER_TEMP` is unique per job and wiped when
-it ends. Set it once via `$GITHUB_ENV` and every later step inherits it:
-
-```yaml
-- name: Setup
-  run: echo "BGX_DB=$RUNNER_TEMP/bgx.db" >> "$GITHUB_ENV"
-```
-
-(GitHub-hosted runners give each job a fresh VM, so there is nothing to collide
-with and the default is fine.)
+Set `BGX_DB` only if you want a specific path (for example, to keep the database
+outside the temp directory so it survives for inspection).
 
 ## Configuration
 
 ### Environment Variables
 
-- **BGX_DB**: Path to the shared SQLite database (default: `<tmpdir>/bgx.db`, e.g. `/tmp/bgx.db`)
+- **BGX_DB**: Path to the shared SQLite database. When unset, bgx uses `$RUNNER_TEMP/bgx.db` if `RUNNER_TEMP` is set (GitHub Actions), otherwise `<tmpdir>/bgx.db` (e.g. `/tmp/bgx.db`).
 
 ## Storage Format
 
