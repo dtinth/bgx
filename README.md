@@ -14,6 +14,8 @@ bgx join --task-name services
 npm test
 ```
 
+![](https://im.dt.in.th/ipfs/bafybeigwclhzdbne6okiyzs5p7kgef4pan7ysllhlksye6ij57ss6gbroa/image.webp)
+
 `docker compose up -d --wait` and `npm ci` run at the same time instead of one
 after the other; `join` waits for the services to be ready (and fails the step
 if they didn't come up) before the tests start.
@@ -39,7 +41,7 @@ mise use -g github:dtinth/bgx
 Pin a specific version:
 
 ```bash
-mise use -g github:dtinth/bgx@0.2.0
+mise use -g github:dtinth/bgx@0.3.0
 ```
 
 ### With go install
